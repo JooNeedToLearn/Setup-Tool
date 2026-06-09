@@ -1,17 +1,83 @@
 #!/data/data/com.termux/files/usr/bin/bash
 
-cd "$HOME" 2>/dev/null || cd
-set +e
+cd /sdcard/Download 2>/dev/null || cd /storage/emulated/0/Download 2>/dev/null || cd
 
-PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
-GOFILE_ID="QeEs1Q"
-MAIN_REPO="deb https://packages.termux.dev/apt/termux-main stable main"
+echo "[1] Cek root..."
+if ! su -c "id" 2>/dev/null | grep -q "uid=0"; then
+  echo "Root belum aktif / belum diizinkan"
+  exit 1
+fi
 
-clear
-echo "======================================"
-echo " KelNara One Command Setup"
-echo "======================================"
+echo "[2] Setup developer option..."
+su -c "settings put global development_settings_enabled 1"
+su -c "wm size 720x1280"
+su -c "wm density 192"
+su -c "settings put global force_msaa 1"
+su -c "settings put global disable_hw_overlays 1"
+su -c "settings put global force_resizable_activities 1"
+su -c "settings put global enable_freeform_support 1"
+su -c "settings put global force_allow_on_external 1"
+su -c "settings put global window_animation_scale 0"
+su -c "settings put global transition_animation_scale 0"
+su -c "settings put global animator_duration_scale 0"
 
-echo "[1/8] Reset repo Termux..."
-mkdir -p "$PREFIX/etc/apt/sources.list.d"
-rm -f "$PREFIX
+echo "[3] Buat shouko.py..."
+cat > /sdcard/Download/shouko.py <<'PY'
+import os, subprocess, urllib.request
+
+DIR="/sdcard/Download/KelNara-APK"
+TMP="/data/local/tmp/kelnara-apk"
+os.makedirs(DIR, exist_ok=True)
+
+APPS=[
+("NovaLauncher_8.1.1.apk","https://github.com/JooNeedToLearn/Setup-Tool/raw/main/apk/NovaLauncher_8.1.1.apk"),
+("MT_Manager.apk","https://github.com/JooNeedToLearn/Setup-Tool/raw/main/apk/MT_Manager.apk"),
+("ControlScreenRotation.apk","https://github.com/JooNeedToLearn/Setup-Tool/raw/main/apk/controlscreenrotationv4.4b24Universal6.0_edbyyouarefinished-a2zapk.io.apk")
+]
+
+def root(cmd):
+    return subprocess.run(["su","-c",cmd],text=True,capture_output=True)
+
+if "uid=0" not in (root("id").stdout+root("id").stderr):
+    print("Root gagal")
+    exit()
+
+root(f"mkdir -p '{TMP}' && chmod 777 '{TMP}'")
+
+ok=0
+fail=0
+
+for name,url in APPS:
+    path=f"{DIR}/{name}"
+    tmp=f"{TMP}/{name}"
+    print("[DOWNLOAD]", name)
+    try:
+        urllib.request.urlretrieve(url,path)
+    except Exception as e:
+        print("Download gagal:", e)
+        fail+=1
+        continue
+
+    if os.path.getsize(path) < 100000:
+        print("File terlalu kecil / link salah")
+        fail+=1
+        continue
+
+    print("[INSTALL]", name)
+    root(f"cp '{path}' '{tmp}' && chmod 644 '{tmp}'")
+    out=root(f"pm install -r -d '{tmp}'")
+    result=out.stdout+out.stderr
+    print(result)
+
+    if "Success" in result:
+        ok+=1
+    else:
+        fail+=1
+
+print("DONE")
+print("Installed:",ok)
+print("Failed:",fail)
+PY
+
+echo "[4] Run installer..."
+su -c "cd /sdcard/Download && export PATH=\$PATH:/data/data/com.termux/files/usr/bin && python shouko.py"
