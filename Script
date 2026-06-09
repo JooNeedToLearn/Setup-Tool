@@ -1,256 +1,137 @@
 #!/bin/bash
-
 cd
 
-echo "[+] Setup storage..."
-if [ -e "/data/data/com.termux/files/home/storage" ]; then
-    rm -rf /data/data/com.termux/files/home/storage
-fi
-
 termux-setup-storage
-sleep 2
-
-echo "[+] Updating Termux..."
 yes | pkg update
-yes | pkg upgrade
-
-echo "[+] Installing packages..."
 yes | pkg install python
 yes | pkg install python-pip
-pip install requests colorama
+pip install requests
 
-echo "[+] Creating folders..."
-mkdir -p /sdcard/Download
 mkdir -p /sdcard/Download/KelNara-APK
 
-echo "[+] Creating shouko.py..."
 cat > /sdcard/Download/shouko.py <<'PY'
-import os
-import re
-import sys
-import time
-import zipfile
-import shutil
-import subprocess
-import urllib.request
-import urllib.parse
-import ssl
+import os, re, subprocess, requests, urllib.parse
 
-BASE_DIR = "/sdcard/Download/KelNara-APK"
-TMP_DIR = "/data/local/tmp/kelnara-apk"
-os.makedirs(BASE_DIR, exist_ok=True)
+GOFILE_ID = "QeEs1Q"
+DIR = "/sdcard/Download/KelNara-APK"
+TMP = "/data/local/tmp/kelnara-apk"
 
-APPS = [
-    ("Nova Launcher", "https://teslacoilapps.com/tesladirect/download.pl?packageName=com.teslacoilsw.launcher&betaType=public"),
-    ("MT Manager", "https://sfile.co/PZYHHHdgxTW"),
-    ("Control Screen Rotation", "https://a2zapk.co/dload/1409853/"),
-    ("Killapps", "https://a2zapk.co/dload/1406076/"),
-]
+os.makedirs(DIR, exist_ok=True)
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/vnd.android.package-archive,*/*;q=0.8",
-}
+def root(cmd):
+    return subprocess.run(["su", "-c", cmd], text=True, capture_output=True)
 
-def run(cmd, root=False):
-    if root:
-        return subprocess.run(["su", "-c", cmd], text=True, capture_output=True)
-    return subprocess.run(cmd, shell=True, text=True, capture_output=True)
+def clean(name):
+    return re.sub(r"[^A-Za-z0-9._-]", "_", name)
 
-def safe_name(name):
-    return re.sub(r"[^A-Za-z0-9_-]+", "_", name).strip("_")
+def get_token():
+    r = requests.post("https://api.gofile.io/accounts", timeout=30)
+    return r.json()["data"]["token"]
 
-def check_root():
-    print("[+] Checking root...")
-    r = run("id", root=True)
-    out = r.stdout + r.stderr
+def get_contents(token, folder_id):
+    h = {"Authorization": f"Bearer {token}"}
+    url = f"https://api.gofile.io/contents/{folder_id}?wt=4fd6sg89d7s6&cache=true"
+    r = requests.get(url, headers=h, timeout=30)
+    data = r.json()
+    if data.get("status") != "ok":
+        print(data)
+        raise Exception("Gagal ambil data Gofile")
+    return data["data"]
 
-    if "uid=0" in out:
-        print("[OK] ROOT ACTIVE")
-        run(f"mkdir -p '{TMP_DIR}' && chmod 777 '{TMP_DIR}'", root=True)
-        return True
+def collect_files(node):
+    files = []
+    children = node.get("children", {})
+    for _, item in children.items():
+        if item.get("type") == "file":
+            files.append(item)
+        elif item.get("type") == "folder":
+            files += collect_files(item)
+    return files
 
-    print("[X] ROOT NOT ACTIVE")
-    print("Aktifkan Root Option Redfinger lalu izinkan SU untuk Termux.")
-    return False
+def download_file(token, item):
+    name = clean(item["name"])
+    file_id = item["id"]
+    server = item.get("serverChoosen") or item.get("server")
+    path = f"{DIR}/{name}"
 
-def is_apk(path):
-    if not os.path.exists(path):
-        return False
-    if os.path.getsize(path) < 100000:
-        return False
-
-    try:
-        if not zipfile.is_zipfile(path):
-            return False
-        with zipfile.ZipFile(path, "r") as z:
-            return "AndroidManifest.xml" in z.namelist()
-    except:
-        return False
-
-def http_download(url, output):
-    req = urllib.request.Request(url, headers=HEADERS)
-    ctx = ssl.create_default_context()
-
-    with urllib.request.urlopen(req, timeout=90, context=ctx) as res:
-        data = res.read()
-        final_url = res.geturl()
-        content_type = res.headers.get("Content-Type", "")
-
-    with open(output, "wb") as f:
-        f.write(data)
-
-    return final_url, content_type, len(data)
-
-def extract_links(html_bytes, base_url):
-    html = html_bytes.decode("utf-8", errors="ignore")
-    links = []
-
-    patterns = [
-        r'href=["\']([^"\']+)["\']',
-        r'src=["\']([^"\']+)["\']',
-        r'url=([^"\'>\s]+)',
-    ]
-
-    for pattern in patterns:
-        for item in re.findall(pattern, html, flags=re.I):
-            link = urllib.parse.urljoin(base_url, item.replace("&amp;", "&"))
-            if link not in links:
-                links.append(link)
-
-    priority = []
-    normal = []
-
-    for link in links:
-        low = link.lower()
-        if any(x in low for x in [".apk", "download", "dload", "dl.php", "getfile", "file"]):
-            priority.append(link)
-        else:
-            normal.append(link)
-
-    return priority + normal[:10]
-
-def download_app(name, url):
-    safe = safe_name(name)
-    apk_path = f"{BASE_DIR}/{safe}.apk"
-    page_path = f"{BASE_DIR}/{safe}_PAGE.html"
-    visited = set()
-
-    def attempt(current_url, depth=0):
-        if depth > 3 or current_url in visited:
-            return None
-
-        visited.add(current_url)
-        tmp_path = f"{BASE_DIR}/{safe}.tmp"
-
-        print("")
-        print("======================================")
-        print(f"APP : {name}")
-        print(f"URL : {current_url}")
-        print("======================================")
-
-        try:
-            final_url, content_type, size = http_download(current_url, tmp_path)
-        except Exception as e:
-            print(f"[X] Download failed: {e}")
-            return None
-
-        print(f"[+] Size: {size} bytes")
-        print(f"[+] Type: {content_type}")
-
-        if is_apk(tmp_path):
-            shutil.move(tmp_path, apk_path)
-            print(f"[OK] APK saved: {apk_path}")
-            return apk_path
-
-        with open(tmp_path, "rb") as f:
-            data = f.read()
-
-        check = data[:500].lower()
-
-        if b"<html" in check or b"<!doctype html" in check:
-            shutil.copyfile(tmp_path, page_path)
-            os.remove(tmp_path)
-
-            links = extract_links(data, final_url)
-
-            for link in links:
-                result = attempt(link, depth + 1)
-                if result:
-                    return result
-
-            print("[X] Not direct APK / captcha / timer page.")
-            print(f"[!] Page saved: {page_path}")
-            return None
-
-        os.remove(tmp_path)
-        print("[X] Invalid APK file.")
+    if not server:
+        print(f"[SKIP] Tidak ada server untuk {name}")
         return None
 
-    return attempt(url)
+    url = f"https://{server}.gofile.io/download/web/{file_id}/{urllib.parse.quote(item['name'])}"
+    print(f"[DOWNLOAD] {name}")
 
-def install_apk(name, apk_path):
-    safe = safe_name(name)
-    tmp_apk = f"{TMP_DIR}/{safe}.apk"
+    h = {
+        "Cookie": f"accountToken={token}",
+        "User-Agent": "Mozilla/5.0 Android"
+    }
 
-    print("")
-    print(f"[+] Installing: {name}")
+    with requests.get(url, headers=h, stream=True, timeout=120) as r:
+        if r.status_code != 200:
+            print(f"[FAILED] HTTP {r.status_code} - {name}")
+            return None
 
-    copy = run(f"cp '{apk_path}' '{tmp_apk}' && chmod 644 '{tmp_apk}'", root=True)
+        with open(path, "wb") as f:
+            for chunk in r.iter_content(1024 * 256):
+                if chunk:
+                    f.write(chunk)
 
-    if copy.returncode != 0:
-        print("[X] Copy failed")
-        print(copy.stdout + copy.stderr)
-        return False
+    if os.path.getsize(path) < 100000:
+        print(f"[FAILED] File terlalu kecil: {name}")
+        return None
 
-    install = run(f"pm install -r -d '{tmp_apk}'", root=True)
-    output = install.stdout + install.stderr
+    print(f"[OK] Saved: {path}")
+    return path
 
-    print(output.strip())
+def install_apk(path):
+    name = os.path.basename(path)
+    tmp = f"{TMP}/{name}"
 
-    if "Success" in output:
-        print(f"[OK] Installed: {name}")
-        return True
+    print(f"[INSTALL] {name}")
+    root(f"mkdir -p '{TMP}' && chmod 777 '{TMP}'")
+    root(f"cp '{path}' '{tmp}' && chmod 644 '{tmp}'")
 
-    print(f"[X] Install failed: {name}")
-    return False
+    out = root(f"pm install -r -d '{tmp}'")
+    result = out.stdout + out.stderr
+    print(result.strip())
 
-def download_install_all():
-    if not check_root():
-        return
+    return "Success" in result
 
-    ok = 0
-    fail = 0
+print("[CHECK] Root...")
+if "uid=0" not in (root("id").stdout + root("id").stderr):
+    print("[X] Root belum aktif / belum diizinkan.")
+    exit()
 
-    for name, url in APPS:
-        apk = download_app(name, url)
+print("[OK] Root aktif")
 
-        if apk and install_apk(name, apk):
-            ok += 1
-        else:
-            fail += 1
+token = get_token()
+data = get_contents(token, GOFILE_ID)
+files = collect_files(data)
 
-        time.sleep(1)
+print(f"[INFO] Total file: {len(files)}")
 
-    print("")
-    print("======================================")
-    print("DONE")
-    print(f"Installed : {ok}")
-    print(f"Failed    : {fail}")
-    print(f"Folder    : {BASE_DIR}")
-    print("======================================")
+ok = 0
+fail = 0
 
-if __name__ == "__main__":
-    download_install_all()
+for item in files:
+    name = item.get("name", "")
+
+    if not name.lower().endswith(".apk"):
+        print(f"[SKIP] Bukan APK: {name}")
+        continue
+
+    apk = download_file(token, item)
+
+    if apk and install_apk(apk):
+        ok += 1
+    else:
+        fail += 1
+
+print("=================================")
+print(f"Installed: {ok}")
+print(f"Failed   : {fail}")
+print(f"Folder   : {DIR}")
+print("=================================")
 PY
 
-echo "[+] Checking root..."
-if ! command -v su >/dev/null 2>&1 || ! su -c 'exit' >/dev/null 2>&1; then
-    echo "[X] Root belum aktif / belum diizinkan."
-    echo "[!] File tetap dibuat di /sdcard/Download/shouko.py"
-    exit
-fi
-
-echo "[+] Running tool..."
-su -c "settings put global development_settings_enabled 1"
-su -c "cd /sdcard/Download && export PATH=\$PATH:/data/data/com.termux/files/usr/bin && export TERM=xterm-256color && python ./shouko.py"
+su -c "cd /sdcard/Download && export PATH=\$PATH:/data/data/com.termux/files/usr/bin && export TERM=xterm-256color && python shouko.py"
