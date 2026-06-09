@@ -1,16 +1,216 @@
-#!/bin/bash
-cd
-
+#!/data/data/com.termux/files/usr/bin/bash
+cd "$HOME" 2>/dev/null || cd
 set +e
 
-OFFICIAL_REPO="deb https://packages.termux.dev/apt/termux-main stable main"
-SRC="$PREFIX/etc/apt/sources.list"
-SRC_DIR="$PREFIX/etc/apt/sources.list.d"
+PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
+GOFILE_ID="QeEs1Q"
+REPO="deb https://packages.termux.dev/apt/termux-main stable main"
 
-fix_repo() {
-    echo "[+] Fix Termux repository..."
-    mkdir -p "$SRC_DIR"
-    rm -f "$SRC_DIR"/* 2>/dev/null
-    echo "$OFFICIAL_REPO" > "$SRC"
-    rm -rf "$PREFIX/var/lib/apt/lists"/* 2>/dev/null
-    apt
+clear
+echo "======================================"
+echo " KelNara Setup Tool"
+echo "======================================"
+
+echo "[1] Fix repo Termux..."
+mkdir -p "$PREFIX/etc/apt/sources.list.d"
+rm -f "$PREFIX/etc/apt/sources.list.d"/* 2>/dev/null
+echo "$REPO" > "$PREFIX/etc/apt/sources.list"
+rm -rf "$PREFIX/var/lib/apt/lists"/* 2>/dev/null
+apt update -y
+
+echo "[2] Install kebutuhan..."
+pkg install -y python wget ca-certificates openssl
+
+echo "[3] Setup storage..."
+rm -rf "$HOME/storage" 2>/dev/null
+termux-setup-storage >/dev/null 2>&1
+sleep 2
+mkdir -p /sdcard/Download/KelNara-APK
+
+echo "[4] Cek root..."
+if ! command -v su >/dev/null 2>&1 || ! su -c "id" 2>/dev/null | grep -q "uid=0"; then
+    echo "[X] Root belum aktif / belum diizinkan."
+    echo "Aktifkan Root Option lalu izinkan SU untuk Termux."
+    exit 1
+fi
+echo "[OK] Root aktif."
+
+echo "[5] Setup Developer Options..."
+su -c "settings put global development_settings_enabled 1"
+su -c "wm size 720x1280"
+su -c "wm density 192"
+su -c "settings put global force_msaa 1"
+su -c "settings put global disable_hw_overlays 1"
+su -c "settings put global force_resizable_activities 1"
+su -c "settings put global enable_freeform_support 1"
+su -c "settings put global force_desktop_mode_on_external_displays 1"
+su -c "settings put global force_allow_on_external 1"
+su -c "settings put global window_animation_scale 0"
+su -c "settings put global transition_animation_scale 0"
+su -c "settings put global animator_duration_scale 0"
+
+echo "[6] Membuat shouko.py..."
+cat > /sdcard/Download/shouko.py <<'PY'
+import os, re, json, time, subprocess, urllib.request, urllib.parse
+
+GOFILE_ID = "QeEs1Q"
+DIR = "/sdcard/Download/KelNara-APK"
+TMP = "/data/local/tmp/kelnara-apk"
+os.makedirs(DIR, exist_ok=True)
+
+UA = "Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36"
+
+def root(cmd):
+    return subprocess.run(["su", "-c", cmd], text=True, capture_output=True)
+
+def clean(name):
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("_")
+
+def req_json(url, method="GET", headers=None):
+    h = {"User-Agent": UA, "Accept": "application/json"}
+    if headers:
+        h.update(headers)
+    data = b"" if method == "POST" else None
+    r = urllib.request.Request(url, data=data, headers=h, method=method)
+    with urllib.request.urlopen(r, timeout=60) as res:
+        return json.loads(res.read().decode("utf-8", "ignore"))
+
+def get_token():
+    data = req_json("https://api.gofile.io/accounts", "POST")
+    token = data.get("data", {}).get("token")
+    if not token:
+        raise Exception("Token Gofile gagal dibuat")
+    return token
+
+def get_contents(token):
+    url = f"https://api.gofile.io/contents/{GOFILE_ID}?wt=4fd6sg89d7s6&cache=true"
+    data = req_json(url, "GET", {"Authorization": f"Bearer {token}"})
+    if data.get("status") != "ok":
+        raise Exception(str(data))
+    return data["data"]
+
+def collect(node):
+    out = []
+    children = node.get("children", {})
+    items = children.values() if isinstance(children, dict) else children
+    for item in items:
+        if item.get("type") == "file":
+            out.append(item)
+        elif item.get("type") == "folder":
+            out += collect(item)
+    return out
+
+def urls(item):
+    name = item.get("name", "file.apk")
+    fid = item.get("id") or item.get("fileId")
+    server = item.get("serverChoosen") or item.get("server")
+    result = []
+
+    for k in ["directLink", "link", "downloadPage"]:
+        u = item.get(k)
+        if isinstance(u, str) and u.startswith("http"):
+            result.append(u)
+
+    if server and fid:
+        q = urllib.parse.quote(name)
+        result.append(f"https://{server}.gofile.io/download/web/{fid}/{q}")
+        result.append(f"https://{server}.gofile.io/download/{fid}/{q}")
+
+    return list(dict.fromkeys(result))
+
+def download(token, item):
+    name = item.get("name", "file.apk")
+    safe = clean(name)
+    path = f"{DIR}/{safe}"
+
+    print(f"[DOWNLOAD] {name}")
+
+    for u in urls(item):
+        h = {
+            "User-Agent": UA,
+            "Authorization": f"Bearer {token}",
+            "Cookie": f"accountToken={token}"
+        }
+
+        try:
+            r = urllib.request.Request(u, headers=h)
+            with urllib.request.urlopen(r, timeout=180) as res, open(path, "wb") as f:
+                while True:
+                    chunk = res.read(1024 * 256)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+
+            if os.path.getsize(path) < 100000:
+                print("[SKIP] File terlalu kecil")
+                continue
+
+            with open(path, "rb") as f:
+                if f.read(4) != b"PK\x03\x04":
+                    print("[SKIP] Bukan APK valid")
+                    continue
+
+            print(f"[OK] Saved: {path}")
+            return path
+
+        except Exception as e:
+            print(f"[TRY FAILED] {e}")
+
+    return None
+
+def install(path):
+    name = os.path.basename(path)
+    dst = f"{TMP}/{name}"
+
+    root(f"mkdir -p '{TMP}' && chmod 777 '{TMP}'")
+    root(f"cp '{path}' '{dst}' && chmod 644 '{dst}'")
+
+    print(f"[INSTALL] {name}")
+    r = root(f"pm install -r -d '{dst}'")
+    out = (r.stdout + r.stderr).strip()
+    print(out)
+
+    return "Success" in out
+
+print("=================================")
+print(" KelNara Gofile APK Installer")
+print("=================================")
+
+if "uid=0" not in (root("id").stdout + root("id").stderr):
+    print("[X] Root belum aktif.")
+    exit()
+
+token = get_token()
+data = get_contents(token)
+files = [x for x in collect(data) if x.get("name", "").lower().endswith(".apk")]
+
+print(f"[INFO] APK ditemukan: {len(files)}")
+
+ok = 0
+fail = 0
+
+for item in files:
+    apk = download(token, item)
+    if apk and install(apk):
+        ok += 1
+    else:
+        fail += 1
+    time.sleep(1)
+
+print("=================================")
+print(f"Installed: {ok}")
+print(f"Failed   : {fail}")
+print(f"Folder   : {DIR}")
+print("=================================")
+PY
+
+echo "[7] Setup Termux Boot..."
+mkdir -p "$HOME/.termux/boot"
+cat > "$HOME/.termux/boot/abcd.sh" <<'BOOT'
+#!/data/data/com.termux/files/usr/bin/bash
+su -c "cd /sdcard/Download && export PATH=\$PATH:/data/data/com.termux/files/usr/bin && export TERM=xterm-256color && python ./shouko.py"
+BOOT
+chmod +x "$HOME/.termux/boot/abcd.sh"
+
+echo "[8] Run installer..."
+su -c "cd /sdcard/Download && export PATH=\$PATH:/data/data/com.termux/files/usr/bin && export TERM=xterm-256color && python ./shouko.py"
