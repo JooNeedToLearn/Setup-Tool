@@ -1,56 +1,271 @@
 #!/system/bin/sh
 
-BASE="https://raw.githubusercontent.com/JooNeedToLearn/Setup-Tool/main/apk"
-DL="/sdcard/Download/KelNara-APK"
+# KelNara Auto Setup Tool
+# Termux + Root / Redfinger
+# Source APK: Gofile folder QeEs1Q
+
+GOFILE_ID="QeEs1Q"
+PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 TMP="/data/local/tmp/kelnara-apk"
+DL="/sdcard/Download/KelNara-APK"
+TOOL="/sdcard/Download/KelNara"
+REPO="deb https://packages.termux.dev/apt/termux-main stable main"
 
-mkdir -p "$DL"
+clear 2>/dev/null
+printf "======================================\n"
+printf "        KelNara Auto Setup Tool       \n"
+printf "======================================\n"
 
-echo "[1] Cek root..."
-if ! su -c "id" 2>/dev/null | grep -q "uid=0"; then
-  echo "ROOT GAGAL / belum diizinkan"
+printf "[1] Fix repo Termux...\n"
+mkdir -p "$PREFIX/etc/apt/sources.list.d" 2>/dev/null
+rm -f "$PREFIX/etc/apt/sources.list.d"/* 2>/dev/null
+printf "%s\n" "$REPO" > "$PREFIX/etc/apt/sources.list"
+rm -rf "$PREFIX/var/lib/apt/lists"/* 2>/dev/null
+
+apt update -y || pkg update -y
+
+printf "[2] Install kebutuhan Termux...\n"
+pkg install -y python wget ca-certificates openssl || {
+  printf "[X] Gagal install python/wget. Cek internet atau repo Termux.\n"
   exit 1
-fi
-echo "ROOT OK"
-
-echo "[2] Setup developer options..."
-su -c "settings put global development_settings_enabled 1"
-su -c "wm size 720x1280"
-su -c "wm density 192"
-su -c "settings put global force_msaa 1"
-su -c "settings put global disable_hw_overlays 1"
-su -c "settings put global force_resizable_activities 1"
-su -c "settings put global enable_freeform_support 1"
-su -c "settings put global force_allow_on_external 1"
-su -c "settings put global window_animation_scale 0"
-su -c "settings put global transition_animation_scale 0"
-su -c "settings put global animator_duration_scale 0"
-su -c "mkdir -p '$TMP' && chmod 777 '$TMP'"
-
-install_apk() {
-  NAME="$1"
-  URL="$2"
-  APK="$DL/$NAME"
-  DST="$TMP/$NAME"
-
-  echo ""
-  echo "[DOWNLOAD] $NAME"
-  wget --no-check-certificate -O "$APK" "$URL"
-
-  SIZE=$(wc -c < "$APK" 2>/dev/null | tr -d ' ')
-  if [ -z "$SIZE" ] || [ "$SIZE" -lt 100000 ]; then
-    echo "GAGAL: file kecil / link salah / APK belum diupload"
-    return
-  fi
-
-  echo "[INSTALL] $NAME"
-  su -c "cp '$APK' '$DST' && chmod 644 '$DST'"
-  su -c "pm install -r -d '$DST'"
 }
 
-install_apk "NovaLauncher_8.1.1.apk" "$BASE/NovaLauncher_8.1.1.apk"
-install_apk "MT_Manager.apk" "$BASE/MT_Manager.apk"
-install_apk "ControlScreenRotation.apk" "$BASE/ControlScreenRotation.apk"
+printf "[3] Setup storage dan folder...\n"
+termux-setup-storage >/dev/null 2>&1
+sleep 1
+mkdir -p "$DL" 2>/dev/null
 
-echo ""
-echo "SELESAI"
+if [ ! -d "$DL" ] || [ ! -w "$DL" ]; then
+  DL="$HOME/KelNara-APK"
+  TOOL="$HOME/KelNara"
+  mkdir -p "$DL" 2>/dev/null
+fi
+
+printf "Folder APK : %s\n" "$DL"
+printf "Tool file  : %s\n" "$TOOL"
+
+printf "[4] Cek root...\n"
+if ! command -v su >/dev/null 2>&1; then
+  printf "[X] Command su tidak ada. Root belum aktif.\n"
+  exit 1
+fi
+
+if ! su -c "id" 2>/dev/null | grep -q "uid=0"; then
+  printf "[X] Root belum aktif / belum diizinkan.\n"
+  printf "Aktifkan Root Option Redfinger lalu izinkan SU untuk Termux.\n"
+  exit 1
+fi
+printf "[OK] Root aktif.\n"
+
+printf "[5] Setup Developer Options...\n"
+su -c "settings put global development_settings_enabled 1" 2>/dev/null
+su -c "wm size 720x1280" 2>/dev/null
+su -c "wm density 192" 2>/dev/null
+su -c "settings put global force_msaa 1" 2>/dev/null
+su -c "settings put global disable_hw_overlays 1" 2>/dev/null
+su -c "settings put global force_resizable_activities 1" 2>/dev/null
+su -c "settings put global enable_freeform_support 1" 2>/dev/null
+su -c "settings put global force_allow_on_external 1" 2>/dev/null
+su -c "settings put global window_animation_scale 0" 2>/dev/null
+su -c "settings put global transition_animation_scale 0" 2>/dev/null
+su -c "settings put global animator_duration_scale 0" 2>/dev/null
+su -c "mkdir -p '$TMP' && chmod 777 '$TMP'" 2>/dev/null
+
+printf "[6] Membuat tool KelNara...\n"
+cat > "$TOOL" <<PY
+#!/data/data/com.termux/files/usr/bin/python
+import json
+import os
+import re
+import subprocess
+import time
+import urllib.parse
+import urllib.request
+
+GOFILE_ID = "${GOFILE_ID}"
+DL = "${DL}"
+TMP = "${TMP}"
+UA = "Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36"
+
+os.makedirs(DL, exist_ok=True)
+
+
+def root(cmd):
+    return subprocess.run(["su", "-c", cmd], text=True, capture_output=True)
+
+
+def clean(name):
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("_") or "app.apk"
+
+
+def request_json(url, method="GET", token=None):
+    headers = {"User-Agent": UA, "Accept": "application/json"}
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    data = b"" if method == "POST" else None
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    with urllib.request.urlopen(req, timeout=90) as res:
+        raw = res.read().decode("utf-8", "ignore")
+    return json.loads(raw)
+
+
+def create_token():
+    data = request_json("https://api.gofile.io/accounts", "POST")
+    token = data.get("data", {}).get("token")
+    if not token:
+        raise RuntimeError("Token Gofile gagal dibuat: " + str(data))
+    return token
+
+
+def get_folder(token):
+    url = f"https://api.gofile.io/contents/{GOFILE_ID}?wt=4fd6sg89d7s6&cache=true"
+    data = request_json(url, "GET", token)
+    if data.get("status") != "ok":
+        raise RuntimeError("Gagal ambil folder Gofile: " + str(data))
+    return data.get("data", {})
+
+
+def collect_files(node):
+    output = []
+    children = node.get("children", {})
+    if isinstance(children, dict):
+        iterable = children.values()
+    else:
+        iterable = children
+    for item in iterable:
+        if item.get("type") == "file":
+            output.append(item)
+        elif item.get("type") == "folder":
+            output.extend(collect_files(item))
+    return output
+
+
+def candidate_urls(item):
+    name = item.get("name", "app.apk")
+    fid = item.get("id") or item.get("fileId")
+    server = item.get("serverChoosen") or item.get("server")
+    urls = []
+
+    for key in ("directLink", "downloadLink"):
+        val = item.get(key)
+        if isinstance(val, str) and val.startswith("http"):
+            urls.append(val)
+
+    if server and fid:
+        quoted = urllib.parse.quote(name)
+        urls.append(f"https://{server}.gofile.io/download/web/{fid}/{quoted}")
+        urls.append(f"https://{server}.gofile.io/download/{fid}/{quoted}")
+        urls.append(f"https://{server}.gofile.io/download/web/{fid}")
+
+    return list(dict.fromkeys(urls))
+
+
+def download_apk(token, item):
+    original_name = item.get("name", "app.apk")
+    if not original_name.lower().endswith(".apk"):
+        print("[SKIP] Bukan APK:", original_name)
+        return None
+
+    filename = clean(original_name)
+    path = os.path.join(DL, filename)
+    headers = {
+        "User-Agent": UA,
+        "Authorization": "Bearer " + token,
+        "Cookie": "accountToken=" + token,
+    }
+
+    print("\n[DOWNLOAD]", original_name)
+    for url in candidate_urls(item):
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=240) as res, open(path, "wb") as f:
+                while True:
+                    chunk = res.read(1024 * 256)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+
+            size = os.path.getsize(path)
+            if size < 100000:
+                print("[TRY FAILED] File terlalu kecil:", size)
+                continue
+
+            with open(path, "rb") as f:
+                sig = f.read(4)
+            if sig != b"PK\\x03\\x04":
+                print("[TRY FAILED] Bukan APK valid")
+                continue
+
+            print("[OK] Saved:", path)
+            return path
+        except Exception as e:
+            print("[TRY FAILED]", e)
+
+    return None
+
+
+def install_apk(path):
+    name = os.path.basename(path)
+    dst = TMP.rstrip("/") + "/" + name
+
+    print("[INSTALL]", name)
+    root(f"mkdir -p '{TMP}' && chmod 777 '{TMP}'")
+    copied = root(f"cp '{path}' '{dst}' && chmod 644 '{dst}'")
+    if copied.returncode != 0:
+        print("[X] Copy gagal:", (copied.stdout + copied.stderr).strip())
+        return False
+
+    result = root(f"pm install -r -d '{dst}'")
+    out = (result.stdout + result.stderr).strip()
+    print(out)
+    return "Success" in out
+
+
+def main():
+    print("=================================")
+    print(" KelNara Gofile APK Installer")
+    print("=================================")
+
+    if "uid=0" not in (root("id").stdout + root("id").stderr):
+        print("[X] Root tidak aktif.")
+        return
+
+    token = create_token()
+    folder = get_folder(token)
+    files = [x for x in collect_files(folder) if x.get("name", "").lower().endswith(".apk")]
+    print("[INFO] APK ditemukan:", len(files))
+
+    ok = 0
+    fail = 0
+
+    for item in files:
+        apk = download_apk(token, item)
+        if apk and install_apk(apk):
+            ok += 1
+        else:
+            fail += 1
+        time.sleep(1)
+
+    print("=================================")
+    print("Installed:", ok)
+    print("Failed   :", fail)
+    print("Folder   :", DL)
+    print("=================================")
+
+
+if __name__ == "__main__":
+    main()
+PY
+chmod +x "$TOOL" 2>/dev/null
+
+printf "[7] Setup Termux Boot...\n"
+BOOT_DIR="$HOME/.termux/boot"
+mkdir -p "$BOOT_DIR" 2>/dev/null
+cat > "$BOOT_DIR/KelNara.sh" <<BOOT
+#!/data/data/com.termux/files/usr/bin/sh
+su -c "cd '$DL' && export PATH=\$PATH:/data/data/com.termux/files/usr/bin && export TERM=xterm-256color && python '$TOOL'"
+BOOT
+chmod +x "$BOOT_DIR/KelNara.sh" 2>/dev/null
+
+printf "[8] Jalankan KelNara...\n"
+su -c "export PATH=\$PATH:/data/data/com.termux/files/usr/bin && export TERM=xterm-256color && python '$TOOL'"
