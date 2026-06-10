@@ -1,14 +1,19 @@
-#!/data/data/com.termux/files/usr/bin/bash
+#!/system/bin/sh
 
-cd /sdcard/Download 2>/dev/null || cd /storage/emulated/0/Download 2>/dev/null || cd
+BASE="https://raw.githubusercontent.com/JooNeedToLearn/Setup-Tool/main/apk"
+DL="/sdcard/Download/KelNara-APK"
+TMP="/data/local/tmp/kelnara-apk"
+
+mkdir -p "$DL"
 
 echo "[1] Cek root..."
 if ! su -c "id" 2>/dev/null | grep -q "uid=0"; then
-  echo "Root belum aktif / belum diizinkan"
+  echo "ROOT GAGAL / belum diizinkan"
   exit 1
 fi
+echo "ROOT OK"
 
-echo "[2] Setup developer option..."
+echo "[2] Setup developer options..."
 su -c "settings put global development_settings_enabled 1"
 su -c "wm size 720x1280"
 su -c "wm density 192"
@@ -20,64 +25,32 @@ su -c "settings put global force_allow_on_external 1"
 su -c "settings put global window_animation_scale 0"
 su -c "settings put global transition_animation_scale 0"
 su -c "settings put global animator_duration_scale 0"
+su -c "mkdir -p '$TMP' && chmod 777 '$TMP'"
 
-echo "[3] Buat shouko.py..."
-cat > /sdcard/Download/shouko.py <<'PY'
-import os, subprocess, urllib.request
+install_apk() {
+  NAME="$1"
+  URL="$2"
+  APK="$DL/$NAME"
+  DST="$TMP/$NAME"
 
-DIR="/sdcard/Download/KelNara-APK"
-TMP="/data/local/tmp/kelnara-apk"
-os.makedirs(DIR, exist_ok=True)
+  echo ""
+  echo "[DOWNLOAD] $NAME"
+  wget --no-check-certificate -O "$APK" "$URL"
 
-APPS=[
-("NovaLauncher_8.1.1.apk","https://github.com/JooNeedToLearn/Setup-Tool/raw/main/apk/NovaLauncher_8.1.1.apk"),
-("MT_Manager.apk","https://github.com/JooNeedToLearn/Setup-Tool/raw/main/apk/MT_Manager.apk"),
-("ControlScreenRotation.apk","https://github.com/JooNeedToLearn/Setup-Tool/raw/main/apk/controlscreenrotationv4.4b24Universal6.0_edbyyouarefinished-a2zapk.io.apk")
-]
+  SIZE=$(wc -c < "$APK" 2>/dev/null | tr -d ' ')
+  if [ -z "$SIZE" ] || [ "$SIZE" -lt 100000 ]; then
+    echo "GAGAL: file kecil / link salah / APK belum diupload"
+    return
+  fi
 
-def root(cmd):
-    return subprocess.run(["su","-c",cmd],text=True,capture_output=True)
+  echo "[INSTALL] $NAME"
+  su -c "cp '$APK' '$DST' && chmod 644 '$DST'"
+  su -c "pm install -r -d '$DST'"
+}
 
-if "uid=0" not in (root("id").stdout+root("id").stderr):
-    print("Root gagal")
-    exit()
+install_apk "NovaLauncher_8.1.1.apk" "$BASE/NovaLauncher_8.1.1.apk"
+install_apk "MT_Manager.apk" "$BASE/MT_Manager.apk"
+install_apk "ControlScreenRotation.apk" "$BASE/ControlScreenRotation.apk"
 
-root(f"mkdir -p '{TMP}' && chmod 777 '{TMP}'")
-
-ok=0
-fail=0
-
-for name,url in APPS:
-    path=f"{DIR}/{name}"
-    tmp=f"{TMP}/{name}"
-    print("[DOWNLOAD]", name)
-    try:
-        urllib.request.urlretrieve(url,path)
-    except Exception as e:
-        print("Download gagal:", e)
-        fail+=1
-        continue
-
-    if os.path.getsize(path) < 100000:
-        print("File terlalu kecil / link salah")
-        fail+=1
-        continue
-
-    print("[INSTALL]", name)
-    root(f"cp '{path}' '{tmp}' && chmod 644 '{tmp}'")
-    out=root(f"pm install -r -d '{tmp}'")
-    result=out.stdout+out.stderr
-    print(result)
-
-    if "Success" in result:
-        ok+=1
-    else:
-        fail+=1
-
-print("DONE")
-print("Installed:",ok)
-print("Failed:",fail)
-PY
-
-echo "[4] Run installer..."
-su -c "cd /sdcard/Download && export PATH=\$PATH:/data/data/com.termux/files/usr/bin && python shouko.py"
+echo ""
+echo "SELESAI"
